@@ -9,12 +9,16 @@ Built for the [Hacktoberfest 2026 Open-Source AI Challenge, Week 1: "Touch Grass
 ## How it works
 
 ```
-phone (browser) ──hotspot Wi-Fi, no internet──▶ laptop: server.py ──▶ Ollama ──▶ gemma4:12b (vision)
+phone (browser) ──same Wi-Fi or hotspot, no internet──▶ laptop: server.py ──▶ Ollama ──▶ gemma4:12b (vision)
 ```
 
 1. **Start a walk.** You get your first quest, read aloud by the phone's built-in offline voice.
-2. **📷 Snap a find.** Gemma lists the features it can see, ranks its top 3 guesses, picks one, and gives a "look closer" tip plus your next quest.
-3. **End walk.** Gemma writes a short journal using only what you actually found. It's saved to `walks/<date>/journal.html` along with your photos.
+2. **📷 Snap a find**, or **🖼️ add photos from your gallery** later. You don't have to carry the laptop: take photos in the garden with your normal camera, then add them at home. The journal uses each photo's own capture time.
+3. Gemma lists the features it can see, ranks its top 3 guesses, picks one, and gives a "look closer" tip plus your next quest.
+4. **Not sure? It looks again.** Below 80% confidence, Gemma describes the subject's structure first (simple or compound leaves, growth habit, markings) and then names it from that description.
+5. **Still not sure? It becomes a 🔍 Mystery find.** Instead of guessing, it gives you **one thing to check on the real plant** that would separate its guesses ("blue flowers mean butterfly pea…"). That sends you back outside instead of back to the screen.
+6. **✏️ I know what this is.** If you know better, correct it. The journal credits you and records what Gemma guessed.
+7. **End walk.** Gemma writes a short journal using only what you actually found, with unsolved mystery finds in their own section. It's saved to `walks/<date>/journal.html` with your photos.
 
 ## Run it
 
@@ -37,10 +41,11 @@ Settings, all optional: `MODEL=qwen2.5vl:3b` (any Ollama vision model), `OLLAMA_
 
 ## Honest limitations
 
-- **Birds are hard for a 12B model.** In testing, a female house sparrow was confidently called a "Jungle Babbler", though "House Sparrow" showed up in its alternatives. So the app always shows **what it saw** and what it **could also be**, and calls something "Not sure… maybe X" below 60% confidence. The model rates its own confidence, so treat that number as a hint, not a measurement.
+- **Gemma's self-rated confidence varies.** The same vine photo scored 75% on one run and 85% on the next, so it doesn't always trigger the second look. On my first real walk, Gemma got 6 of 7 plants right and called a butterfly pea vine "Creeping Charlie". Checking the real vine for blue flowers solved it, which is the reason the "how to tell" and "I know it" features exist.
+- **Birds are hard for a 12B model.** In testing, a female house sparrow was confidently called a "Jungle Babbler", though "House Sparrow" showed up in its alternatives. So the app always shows **what it saw** and what it **could also be**, and turns anything below 80% confidence into a "Mystery find" instead of a confident answer. The model rates its own confidence, so treat that number as a hint, not a measurement.
 - Scientific names and "fun facts" are **deliberately left out**, because the model made them up. Tips are limited to details visible in the photo.
 - It never tells you whether something is safe to eat or touch. Don't use it for that.
-- Each photo takes about 20–35 seconds on an RTX 3050 laptop GPU (6 GB).
+- Each photo takes about 20–35 seconds on an RTX 3050 laptop GPU (6 GB), plus about 40 seconds when it takes a second look.
 
 ## License
 
