@@ -30,6 +30,7 @@
   .alt:empty, .tell[hidden] { display:none; }
   .secondary { background:var(--card); color:var(--accent); font-weight:600; border:2px solid var(--accent); }
   .tell { background:#a0522d1a; border-radius:10px; padding:8px 10px; margin:10px 0 0; }
+  .hear { width:auto; margin-top:10px; padding:8px 12px; font-size:.9rem; background:transparent; color:var(--accent); border:1px solid var(--accent); }
   .fix { margin-top:10px; color:var(--muted); font-size:.9rem; }
   .fix form { display:flex; gap:8px; margin-top:8px; }
   .fix input { flex:1; font:inherit; padding:10px; border-radius:10px; border:1px solid #8886; background:var(--bg); color:var(--ink); }
@@ -124,12 +125,19 @@ function setTitle(el, f) {
       + (f.first_guess ? ` · 🔁 took a second look (first guess: ${f.first_guess})` : '');
 }
 
+function sayFind(f) {
+  if (f.corrected_from) return `This is ${f.common_name}. You identified it.`;
+  if (f.mystery) return `A mystery. Maybe ${f.common_name}. ${f.how_to_tell || ''}`;
+  return `That's ${f.common_name}. ${f.look_closer}`;
+}
+
 function addCard(f, src) {
   const el = document.createElement('article');
   el.className = 'card';
   el.innerHTML = `<img alt=""><div class="body"><h2></h2>
     <div class="meter"><span></span></div><small></small>
     <p class="tell"></p><p class="seen"></p><p class="alt"></p><p class="fact"></p>
+    <button class="hear" type="button">🔊 Hear it</button>
     <details class="fix"><summary>✏️ I know what this is</summary>
       <form><input placeholder="e.g. Butterfly pea" maxlength="80" required><button>Save</button></form>
     </details></div>`;
@@ -140,6 +148,7 @@ function addCard(f, src) {
   el.querySelector('.seen').textContent = '👀 ' + (f.visible_features || []).join(' · ');
   el.querySelector('.fact').textContent = '🔎 ' + f.look_closer;
   setTitle(el, f);
+  el.querySelector('.hear').onclick = () => speak(sayFind(f));
   el.querySelector('form').onsubmit = async ev => {
     ev.preventDefault();
     try {
@@ -205,8 +214,7 @@ $('cam').onchange = async () => {
   try {
     const f = await identifyOne(file, null, '');
     if (!f) return speak("That doesn't look like a nature find. Try a plant, bird or bug.");
-    const name = f.mystery ? `a mystery. Maybe ${f.common_name}. ${f.how_to_tell}` : `${f.common_name}. ${f.look_closer}`;
-    speak(`That's ${name} Your next quest: ${f.next_quest}`);
+    speak(`${sayFind(f)} Your next quest: ${f.next_quest}`);
     status('');
   } catch (e) { status('Hmm, that failed: ' + e.message); }
   finally { $('snap').disabled = $('pick').disabled = false; }
@@ -220,11 +228,15 @@ $('gallery').onchange = async () => {
   $('snap').disabled = $('pick').disabled = $('end').disabled = true;
   try {
     await ensureWalk();
-    let added = 0;
+    const found = [];
     for (const [i, file] of files.entries()) {
       const taken = await photoTime(file);
-      if (await identifyOne(file, taken, `Photo ${i + 1} of ${files.length} · `)) added++;
+      const f = await identifyOne(file, taken, `Photo ${i + 1} of ${files.length} · `);
+      if (f) found.push(f);
     }
+    const added = found.length, mysteries = found.filter(f => f.mystery).length;
+    if (added) speak(`Added ${added} find${added === 1 ? '' : 's'}: ${found.map(f => f.common_name).join(', ')}.`
+      + (mysteries ? ` ${mysteries} mystery find${mysteries === 1 ? '' : 's'} to check. Tap it to hear how to tell.` : ''));
     const skipped = files.length - added;
     status(`✅ Added ${added} photo${added === 1 ? '' : 's'}` + (skipped ? ` · skipped ${skipped} that weren't nature finds.` : '.'));
   } catch (e) { status('Hmm, that failed: ' + e.message); }
@@ -248,7 +260,17 @@ new ResizeObserver(fitBar).observe($('bar'));
 // Coming back from the journal with the Back button restores a stale page; reload it.
 addEventListener('pageshow', e => { if (e.persisted) location.reload(); });
 
+// Reopened mid-walk (refresh, closed tab)? Bring back the cards saved on the laptop.
+async function restoreWalk() {
+  if (!walk) return;
+  try {
+    const r = await fetch(`/walks/${walk}/finds.json`, { cache: 'no-store' });
+    if (r.ok) for (const f of await r.json()) addCard(f, `/walks/${walk}/${f.photo}`);
+  } catch {}
+}
+
 render();
+restoreWalk();
 </script>
 </body>
 </html>
