@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f3a2b">
+<title>Pocket Naturalist</title>
+<style>
+  :root { --bg:#f4f1e8; --ink:#1d2b22; --muted:#5d6b61; --accent:#2f6b45; --card:#fffdf7; --warn:#a0522d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121a15; --ink:#e7ede8; --muted:#9aa89e; --accent:#7cc495; --card:#1b251f; --warn:#e0a07a; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:17px/1.45 system-ui,sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:20px 16px 120px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  button { font:inherit; border:0; border-radius:14px; padding:16px; width:100%; cursor:pointer; }
+  .primary { background:var(--accent); color:var(--bg); font-weight:600; font-size:1.15rem; }
+  .ghost { background:transparent; color:var(--muted); text-decoration:underline; }
+  .quest { background:var(--card); border-left:5px solid var(--accent); border-radius:12px; padding:14px; margin:0 0 16px; }
+  .quest small { color:var(--muted); display:block; text-transform:uppercase; letter-spacing:.06em; font-size:.75rem; }
+  .card { background:var(--card); border-radius:16px; overflow:hidden; margin:16px 0; box-shadow:0 2px 10px #0002; }
+  .card img { width:100%; max-height:300px; object-fit:cover; display:block; }
+  .card .body { padding:14px 16px; }
+  .card h2 { margin:0; font-size:1.3rem; }
+  .card i { color:var(--muted); }
+  .meter { height:8px; background:#8883; border-radius:4px; margin:10px 0 4px; }
+  .meter span { display:block; height:100%; border-radius:4px; background:var(--accent); }
+  .unsure { color:var(--warn); font-weight:600; }
+  .seen, .alt { color:var(--muted); font-size:.9rem; margin:8px 0 0; }
+  .alt:empty { display:none; }
+  .status { text-align:center; color:var(--muted); padding:20px 0; }
+  .bar { position:fixed; left:0; right:0; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:linear-gradient(transparent,var(--bg) 30%); }
+  .bar > div { max-width:520px; margin:0 auto; display:flex; flex-direction:column; gap:6px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🌿 Pocket Naturalist</h1>
+  <p class="sub">Snap it, hear what it is, pocket the phone, find the next thing.</p>
+
+  <div id="questBox" class="quest" hidden><small>Your quest</small><span id="quest"></span></div>
+  <div id="status" class="status" hidden></div>
+  <div id="finds"></div>
+</main>
+
+<div class="bar"><div>
+  <button id="start" class="primary">Start a walk</button>
+  <button id="snap" class="primary" hidden>📷 Snap a find</button>
+  <button id="end" class="ghost" hidden>End walk &amp; write my journal</button>
+  <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+let walk = store.get('walk'), quest = store.get('quest');
+
+async function api(path, data) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const out = await r.json();
+  if (out.error) throw new Error(out.error);
+  return out;
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.rate = 0.95;
+  speechSynthesis.speak(u);
+}
+
+function render() {
+  $('start').hidden = !!walk;
+  $('snap').hidden = $('end').hidden = !walk;
+  $('questBox').hidden = !quest;
+  $('quest').textContent = quest || '';
+}
+
+function status(msg) { $('status').hidden = !msg; $('status').textContent = msg || ''; }
+
+// Phone photos are huge; shrink to 1024px before sending to the laptop.
+function shrink(file) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, 1024 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = img.width * s; c.height = img.height * s;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      ok(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = fail;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function addCard(f, src) {
+  const sure = f.confidence >= 0.6;
+  const el = document.createElement('article');
+  el.className = 'card';
+  el.innerHTML = `<img alt=""><div class="body"><h2></h2>
+    <div class="meter"><span></span></div><small></small>
+    <p class="seen"></p><p class="alt"></p><p class="fact"></p></div>`;
+  el.querySelector('img').src = src;
+  el.querySelector('h2').textContent = sure ? f.common_name : `Not sure… maybe ${f.common_name}?`;
+  el.querySelector('h2').classList.toggle('unsure', !sure);
+  el.querySelector('.meter span').style.width = `${Math.round(f.confidence * 100)}%`;
+  el.querySelector('small').textContent = `${Math.round(f.confidence * 100)}% sure · ${f.kind} · ${f.time}`;
+  el.querySelector('.seen').textContent = '👀 ' + (f.visible_features || []).join(' · ');
+  el.querySelector('.alt').textContent = f.also_could_be?.length ? 'Could also be: ' + f.also_could_be.join(', ') : '';
+  el.querySelector('.fact').textContent = '🔎 ' + f.look_closer;
+  $('finds').prepend(el);
+}
+
+$('start').onclick = async () => {
+  try {
+    ({ walk } = await api('/api/walk/start', {}));
+    quest = 'Find something alive that catches your eye.';
+    store.set('walk', walk); store.set('quest', quest);
+    $('finds').innerHTML = '';
+    render(); speak(quest);
+  } catch (e) { status('Could not start: ' + e.message); }
+};
+
+$('snap').onclick = () => $('cam').click();
+
+$('cam').onchange = async () => {
+  const file = $('cam').files[0]; $('cam').value = '';
+  if (!file) return;
+  $('snap').disabled = true;
+  const t0 = Date.now();
+  const tick = setInterval(() => status(`🔍 Gemma is looking… ${Math.round((Date.now() - t0) / 1000)}s`), 500);
+  try {
+    const image = await shrink(file);
+    const f = await api('/api/identify', { walk, image, quest });
+    addCard(f, image);
+    quest = f.next_quest; store.set('quest', quest); render();
+    const name = f.confidence >= 0.6 ? f.common_name : `maybe a ${f.common_name}, but I'm not sure`;
+    speak(`That's ${name}. ${f.look_closer} Your next quest: ${f.next_quest}`);
+    status('');
+  } catch (e) { status('Hmm, that failed: ' + e.message); }
+  finally { clearInterval(tick); $('snap').disabled = false; }
+};
+
+$('end').onclick = async () => {
+  $('end').disabled = true;
+  status('✍️ Writing your walk journal…');
+  try {
+    const { journal } = await api('/api/walk/end', { walk });
+    walk = quest = null; store.set('walk', null); store.set('quest', null);
+    location.href = journal;
+  } catch (e) { status(e.message); $('end').disabled = false; }
+};
+
+render();
+</script>
+</body>
+</html>
