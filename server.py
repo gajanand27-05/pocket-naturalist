@@ -9,15 +9,17 @@ import csv
 import datetime
 import html
 import json
+import posixpath
 import os
 import re
 import socket
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path(__file__).parent
-WALKS = ROOT / "walks"
+WALKS = Path(os.environ.get("WALKS_DIR", ROOT / "walks"))  # keep personal photos outside the repo if you like
 OLLAMA = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("MODEL", "gemma4:12b")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -112,27 +114,20 @@ NAME_SCHEMA = {
     "required": ["candidates", "best_index", "confidence", "how_to_tell"],
 }
 
-JOURNAL_PROMPT = """Write a short nature journal entry about this walk, in second person ("you"):
-ONE paragraph of 100-160 words, then one short closing line. No headings, lists, or bullet points.
+JOURNAL_PROMPT = """Write a short nature journal entry about this walk, in second person ("you").
+Below is a numbered list of the finds, in the order they were found. Write ONE sentence per find, in the
+same order, and use ONLY that find's own line for that sentence. Never move a detail from one find to
+another, and never add flowers, fruit, colours, textures, quests, weather, scenery or feelings that are
+not written in that find's line. Vary the sentence openings; never write "then you found".
+- A find marked MYSTERY: say it is still a mystery (maybe the named plant) and what to look for next time.
+- A find marked WALKER-NAMED: credit the walker for knowing what it was. For every other find, never
+  say the walker identified, recognised or knew it; just describe what they saw.
+{extra}End with one short line inviting the walker back outside. Plain prose: no headings, lists or numbers.
 
-Make it read like a story, not a log:
-- Open with the most striking detail the walker actually noticed (from look_closer / visible_features).
-- Connect the finds through those noticed details and the quests, e.g. when a find answered its quest
-  (e.g. a spotted leaf turning up right after a quest to find spots), make that a small moment.
-  Only claim a quest was answered when that find's own features clearly match it; otherwise just
-  say what was found next.
-- Mention the same species found twice only once. Vary sentence openings; never write "then you found".
-- "mystery": true means it's still unsolved: call it a mystery find, name the guesses, and mention
-  the how_to_tell check as something to look for next time.
-- "gemma_guessed_wrongly_as" set means Gemma's guess was wrong and the walker named it themselves;
-  credit the walker (e.g. "you knew it was a butterfly pea, even though Gemma guessed creeping charlie").
-- End with one short line inviting the walker back outside.
+Finds:
+{finds}"""
 
-Use ONLY the facts in the data below. Do not invent weather, time of day, air, light, paths, trails,
-ground, scenery, sounds, smells, feelings, or extra finds. Plain English names only.
-
-Walk started: {started}
-Finds (JSON): {finds}"""
+JOURNAL_MAX = 10  # longer walks get the 10 most telling finds plus "and N more"
 
 
 def ollama_chat(messages, fmt=None, temperature=0.1):
@@ -246,14 +241,28 @@ def end_walk(data):
     finds = load_finds(walk_dir)
     if not finds:
         return {"error": "No finds yet - go snap something!"}
-    slim = [{k: f.get(k) for k in ("time", "common_name", "also_could_be", "kind", "confidence", "quest",
-                                   "visible_features", "look_closer", "mystery", "how_to_tell",
-                                   "corrected_from")} for f in finds]
-    for f in slim:  # an unambiguous name, so the model doesn't think the walker made the wrong guess
-        f["gemma_guessed_wrongly_as"] = f.pop("corrected_from")
+    # one line per find, holding only that find's own detail, so the model can't mix plants up
+    keep = finds
+    if len(finds) > JOURNAL_MAX:  # mysteries and the walker's corrections first, then the surest finds
+        rank = sorted(range(len(finds)), key=lambda i: (not finds[i].get("mystery"),
+                                                         not finds[i].get("corrected_from"),
+                                                         -finds[i].get("confidence", 0)))
+        keep = [finds[i] for i in sorted(rank[:JOURNAL_MAX])]
+    lines, seen = [], set()
+    for f in keep:
+        if f["common_name"].lower() in seen and not f.get("mystery"):
+            continue
+        seen.add(f["common_name"].lower())
+        line = f"{len(lines) + 1}. Gemma's ID: {f['common_name']}. What the walker noticed: {f.get('look_closer', '')}"
+        if f.get("mystery"):
+            line += f" [MYSTERY; to tell: {f.get('how_to_tell', '')}]"
+        if f.get("corrected_from"):
+            line += f" [WALKER-NAMED; Gemma had guessed {f['corrected_from']}]"
+        lines.append(line)
+    more = len(finds) - len(keep)
+    extra = f"- After the last sentence, mention in a few words that there were {more} more finds.\n" if more else ""
     story = ollama_chat([{"role": "user", "content": JOURNAL_PROMPT.format(
-        started=f"{walk_dir.name[11:13]}:{walk_dir.name[13:15]}", finds=json.dumps(slim, ensure_ascii=False))}],
-        temperature=0.4)
+        extra=extra, finds="\n".join(lines))}], temperature=0)
     (walk_dir / "journal.md").write_text(story, "utf-8")
     (walk_dir / "journal.html").write_text(render_journal(walk_dir.name, story, finds), "utf-8")
     return {"journal": f"/walks/{walk_dir.name}/journal.html"}
@@ -309,6 +318,15 @@ class Handler(SimpleHTTPRequestHandler):
         if not (self.path.startswith("/static/") or self.path.startswith("/walks/")):
             return self.send_error(404)
         super().do_GET()
+
+    def translate_path(self, path):
+        # /walks/... comes from WALKS (which may live outside the repo); everything else from ROOT
+        if path.startswith("/walks/"):
+            rel = posixpath.normpath(unquote(path.split("?", 1)[0])[len("/walks/"):]).lstrip("/")
+            if rel.startswith(".."):
+                return str(WALKS / "__missing__")  # no escaping the walks folder
+            return str(WALKS / rel)
+        return super().translate_path(path)
 
     def do_POST(self):
         fn = ROUTES.get(self.path)
