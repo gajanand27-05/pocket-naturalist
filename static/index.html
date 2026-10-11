@@ -98,19 +98,34 @@ function render() {
 function status(msg) { $('status').hidden = !msg; $('status').textContent = msg || ''; }
 
 // Phone photos are huge; shrink to 1024px before sending to the laptop.
-function shrink(file) {
+// Big camera photos decoded at full size exhaust the phone browser's memory after a few,
+// so decode straight to ~1024px, free everything right away, and retry once after a pause.
+async function shrink(file) {
+  try { return await shrinkOnce(file); }
+  catch { await new Promise(r => setTimeout(r, 1500)); return shrinkOnce(file); }
+}
+
+async function shrinkOnce(file) {
+  let src;
+  try { src = await createImageBitmap(file, { resizeWidth: 1024, resizeQuality: 'high' }); }
+  catch { src = await loadImage(file); }  // browsers without resize support
+  const s = Math.min(1, 1024 / Math.max(src.width, src.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * s); c.height = Math.round(src.height * s);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  src.close?.();
+  const url = c.toDataURL('image/jpeg', 0.85);
+  c.width = c.height = 0;  // release the canvas memory now, not at the next GC
+  return url;
+}
+
+function loadImage(file) {
   return new Promise((ok, fail) => {
-    const img = new Image();
-    img.onload = () => {
-      const s = Math.min(1, 1024 / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = img.width * s; c.height = img.height * s;
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(img.src);
-      ok(c.toDataURL('image/jpeg', 0.85));
-    };
-    img.onerror = fail;
-    img.src = URL.createObjectURL(file);
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); ok(img); };
+    img.onerror = () => { URL.revokeObjectURL(url);
+      fail(new Error("the phone couldn't open this image (video or unsupported format?)")); };
+    img.src = url;
   });
 }
 
@@ -169,6 +184,21 @@ async function photoTime(file) {
   return new Date(file.lastModified).toTimeString().slice(0, 5);
 }
 
+// Gemma thought it wasn't nature; let the walker overrule it.
+function addSkippedCard(src, taken) {
+  const el = document.createElement('article');
+  el.className = 'card';
+  el.innerHTML = `<img alt=""><div class="body"><h2 class="unsure">Skipped: Gemma didn't see a plant or animal</h2>
+    <button class="hear" type="button">🌿 It is nature, identify it anyway</button></div>`;
+  el.querySelector('img').src = src;
+  el.querySelector('button').onclick = async () => {
+    el.remove();
+    try { await identifyOne(src, taken, '', true); status(''); }
+    catch (e) { status('Hmm, that failed: ' + e.message); }
+  };
+  $('finds').prepend(el);
+}
+
 async function ensureWalk() {
   if (walk) return;
   ({ walk } = await api('/api/walk/start', {}));
@@ -179,20 +209,20 @@ async function ensureWalk() {
 }
 
 // Identify one photo; `taken` is the HH:MM the photo was taken (gallery) or null (live).
-async function identifyOne(file, taken, label) {
+// `image` is an already-shrunk data URL (see shrink).
+async function identifyOne(image, taken, label, force = false) {
   const t0 = Date.now();
   const tick = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000);
     status(`${label}${s < 35 ? `🔍 Gemma is looking… ${s}s` : `🔁 Not sure yet, taking a closer look… ${s}s`}`); }, 500);
   try {
-    const image = await shrink(file);
     let f;
-    try { f = await api('/api/identify', { walk, image, quest, taken }); }
+    try { f = await api('/api/identify', { walk, image, quest, taken, force }); }
     catch (e) {
       if (e.message !== 'walk ended') throw e;
       walk = null; await ensureWalk();  // that walk already has a journal: start a new one
-      f = await api('/api/identify', { walk, image, quest, taken });
+      f = await api('/api/identify', { walk, image, quest, taken, force });
     }
-    if (f.skipped) { status(f.message); return null; }
+    if (f.skipped) { addSkippedCard(image, taken); return null; }
     addCard(f, image);
     quest = f.next_quest; store.set('quest', quest); render();
     return f;
@@ -212,7 +242,7 @@ $('cam').onchange = async () => {
   if (!file) return;
   $('snap').disabled = $('pick').disabled = true;
   try {
-    const f = await identifyOne(file, null, '');
+    const f = await identifyOne(await shrink(file), null, '');
     if (!f) return speak("That doesn't look like a nature find. Try a plant, bird or bug.");
     speak(`${sayFind(f)} Your next quest: ${f.next_quest}`);
     status('');
@@ -228,17 +258,27 @@ $('gallery').onchange = async () => {
   $('snap').disabled = $('pick').disabled = $('end').disabled = true;
   try {
     await ensureWalk();
-    const found = [];
+    // Read and shrink every photo up front: Android can revoke access to picked files
+    // while a long batch is still being identified.
+    const ready = [], found = [], failed = [];
     for (const [i, file] of files.entries()) {
-      const taken = await photoTime(file);
-      const f = await identifyOne(file, taken, `Photo ${i + 1} of ${files.length} · `);
-      if (f) found.push(f);
+      status(`📥 Preparing photo ${i + 1} of ${files.length}…`);
+      try { ready.push({ name: file.name, taken: await photoTime(file), image: await shrink(file) }); }
+      catch (e) { failed.push(`${file.name}: ${e.message}`); }
+    }
+    for (const [i, p] of ready.entries()) {
+      try {  // one bad photo shouldn't stop the rest of the batch
+        const f = await identifyOne(p.image, p.taken, `Photo ${i + 1} of ${ready.length} · `);
+        if (f) found.push(f);
+      } catch (e) { failed.push(`${p.name}: ${e.message}`); }
     }
     const added = found.length, mysteries = found.filter(f => f.mystery).length;
     if (added) speak(`Added ${added} find${added === 1 ? '' : 's'}: ${found.map(f => f.common_name).join(', ')}.`
       + (mysteries ? ` ${mysteries} mystery find${mysteries === 1 ? '' : 's'} to check. Tap it to hear how to tell.` : ''));
-    const skipped = files.length - added;
-    status(`✅ Added ${added} photo${added === 1 ? '' : 's'}` + (skipped ? ` · skipped ${skipped} that weren't nature finds.` : '.'));
+    const skipped = files.length - added - failed.length;
+    status(`✅ Added ${added} photo${added === 1 ? '' : 's'}`
+      + (skipped ? ` · skipped ${skipped} that weren't nature finds` : '')
+      + (failed.length ? ` · ⚠️ ${failed.length} failed: ${failed.join('; ')}` : '') + '.');
   } catch (e) { status('Hmm, that failed: ' + e.message); }
   finally { $('snap').disabled = $('pick').disabled = $('end').disabled = false; }
 };

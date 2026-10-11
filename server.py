@@ -5,6 +5,7 @@ Then open the printed URL on your phone (same Wi-Fi or phone hotspot; no interne
 Snap finds live, or take photos in the garden and add them from your gallery later.
 """
 import base64
+import csv
 import datetime
 import html
 import json
@@ -28,8 +29,10 @@ then your top 3 candidate species, then pick the best one.
 Rules:
 - Be honest. Lower the confidence when the candidates look alike. Never invent certainty.
 - NEVER say whether anything is safe to eat, touch, or handle.
-- If the photo is mainly a person, a poster, artwork, a screen, text, or a man-made object, with no
-  plant/animal as the clear subject, set kind to "not_nature". Never identify or describe people.
+- If ANY plant, animal, insect or fungus is visible, it IS a nature find, even when a hand, foot,
+  person, fence, wall or building is also in the photo: identify the living thing.
+  Set kind to "not_nature" ONLY when no living thing is visible at all (poster, screenshot, text,
+  selfie, object). Never identify or describe people.
 - Candidate names are plain English common names only. No Latin, no brackets.
 - look_closer: one short tip pointing at a detail VISIBLE in this photo that helps tell this species
   apart (e.g. "notice the grey crown and pale cheek"). Describe only what the photo shows; no trivia.
@@ -75,6 +78,28 @@ the described features, and give an honest confidence (0-1) for the best one.
 - how_to_tell: one thing the walker can LOOK FOR on the real organism (flowers, pods, bark, markings,
   call) that separates your top candidates, e.g. "Blue flowers mean A; frilly purple flowers mean B."
   Looking only - never suggest touching, picking, or tasting."""
+
+
+def load_field_guide():
+    """Common local plants with their key features, so Gemma names what it sees with local vocabulary.
+    Edit field_guide.csv to adapt it to another region; FIELD_GUIDE=0 turns it off."""
+    path = ROOT / "field_guide.csv"
+    if os.environ.get("FIELD_GUIDE", "1") == "0" or not path.exists():
+        return ""
+    with path.open(encoding="utf-8") as f:
+        rows = sorted(csv.DictReader(f), key=lambda r: r["name"])  # A-Z: no entry is favoured by position
+    # local names stay in the CSV for people; Gemma only needs the English name and the features
+    lines = "\n".join(f"- {r['name']}: {r['kind']}; {r['key_features']}" for r in rows)
+    return ("\n\nRegional field guide: common PLANTS where this walker lives (India). Plants only: for birds, "
+            "insects and other animals ignore this guide completely. Use an entry's English name only when its "
+            "key features clearly match what you see (a compound leaf cannot match a simple-leaf entry, a vine "
+            "cannot match a tree). If no entry clearly matches, give your own best common name and a lower "
+            "confidence; never force a match.\n" + lines)
+
+
+FIELD_GUIDE = load_field_guide()
+IDENTIFY_PROMPT += FIELD_GUIDE
+NAME_PROMPT += FIELD_GUIDE
 
 NAME_SCHEMA = {
     "type": "object",
@@ -149,6 +174,8 @@ def identify(data):
     (walk_dir / photo).write_bytes(base64.b64decode(img))
 
     context = ""
+    if data.get("force"):  # the walker says the photo does show something alive
+        context += "\nThe walker confirms this photo shows a plant or animal. Identify it; do not use not_nature."
     if data.get("quest"):
         context += f"\nThe walker was on this quest: \"{data['quest']}\". Say nothing about it unless relevant."
     if finds:
@@ -157,7 +184,9 @@ def identify(data):
     find = json.loads(ollama_chat(
         [{"role": "user", "content": IDENTIFY_PROMPT.format(context=context), "images": [img]}],
         IDENTIFY_SCHEMA))
-    if find.get("kind") == "not_nature":  # posters, screenshots, people: not part of the walk
+    if find.get("kind") == "not_nature" and data.get("force"):
+        find["kind"] = "other"
+    if find.get("kind") == "not_nature":  # posters, screenshots: the phone offers "identify anyway"
         (walk_dir / photo).unlink()
         return {"skipped": True,
                 "message": "That doesn't look like a plant, bird or bug - skipped it. Try a nature photo!"}
