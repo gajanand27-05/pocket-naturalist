@@ -20,6 +20,25 @@ phone (browser) ──same Wi-Fi or hotspot, no internet──▶ laptop: server
 6. **✏️ I know what this is.** If you know better, correct it. The journal credits you and records what Gemma guessed.
 7. **End walk.** Gemma writes a short journal using only what you actually found, with unsolved mystery finds in their own section. It's saved to `walks/<date>/journal.html` with your photos.
 
+## The Indian field guide (`field_guide.csv`)
+
+On real walks in Karnataka, stock Gemma **saw plants correctly but named them like an American field guide**. Castor became "Virginia Creeper", moringa became "Purslane", curry leaf became "Chinese Fringe Tree", and a four o'clock flower became "Mexicaner".
+
+`field_guide.csv` is a plain list of **107 common Indian plants** (garden, kitchen, roadside, weeds, trees, houseplants). Each has its English name, local names, type and the **key features that tell it apart**. It's added to Gemma's prompt (plants only, A–Z, with a "never force a match" rule) so Gemma matches what it sees against local vocabulary. **Edit the CSV to adapt it to your own region.** `FIELD_GUIDE=0` turns it off.
+
+## Accuracy
+
+Measured on 28 labelled photos (22 from my own walks, 6 internet photos), first answer only:
+
+| Setup | Correct | My garden photos |
+|---|---|---|
+| Stock `gemma4:12b` | 13/28 | 8/22 |
+| **+ field guide** | **20/28** | **16/22** |
+
+On my real 17-photo walk (15 with a known answer): **4/15 → 10/15**.
+
+Also tried and measured, then dropped: Qwen3.5 9B, MiniCPM-V 4.5, Qwen2.5-VL 3B, Gemma 4 12B QAT on llama.cpp (with and without an MTP drafter), and a **LoRA fine-tune of Gemma 4 12B** on 1,193 photos from the [DIMPSAR dataset](https://data.mendeley.com/datasets/748f8jkphb) (Pushpa B.R. & N. Shobha Rani, *Data in Brief* 2023, CC BY 4.0) on an NVIDIA DGX Spark. The fine-tune gained +1/28 and became 100% confident on everything, so the 107-line field guide won.
+
 ## Run it
 
 Requirements: Python 3.10+ and [Ollama](https://ollama.com). No pip packages are needed.
@@ -37,7 +56,7 @@ It prints a `http://<laptop-ip>:8000` address. Then:
 
 On Windows, allow Python through the firewall for that network the first time.
 
-Settings, all optional: `MODEL=qwen2.5vl:3b` (any Ollama vision model), `OLLAMA_URL`, `PORT`.
+Settings, all optional: `MODEL=<any Ollama vision model>`, `FIELD_GUIDE=0` (turn the field guide off), `OLLAMA_URL`, `PORT`.
 
 ## Honest limitations
 
@@ -45,7 +64,9 @@ Settings, all optional: `MODEL=qwen2.5vl:3b` (any Ollama vision model), `OLLAMA_
 - **Birds are hard for a 12B model.** In testing, a female house sparrow was confidently called a "Jungle Babbler", though "House Sparrow" showed up in its alternatives. So the app always shows **what it saw** and what it **could also be**, and turns anything below 80% confidence into a "Mystery find" instead of a confident answer. The model rates its own confidence, so treat that number as a hint, not a measurement.
 - Scientific names and "fun facts" are **deliberately left out**, because the model made them up. Tips are limited to details visible in the photo.
 - It never tells you whether something is safe to eat or touch. Don't use it for that.
-- Each photo takes about 20–35 seconds on an RTX 3050 laptop GPU (6 GB), plus about 40 seconds when it takes a second look.
+- **Birds and insects aren't covered by the field guide yet.** In testing, a house sparrow was still misnamed.
+- Plants missing from the field guide can still be misnamed; the "could also be" list, Mystery finds and ✏️ corrections are there for that.
+- Each photo takes about 30–40 seconds on an RTX 3050 laptop GPU (6 GB), plus about 40 seconds when it takes a second look.
 
 ## License
 
